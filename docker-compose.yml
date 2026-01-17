@@ -1,0 +1,37 @@
+version: '3.8'
+services:
+  frontend:
+    build:
+      context: ./UrbanGoal_FrontEnd
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+  backend:
+    build:
+      context: ./UrbanGoal_BackEnd
+    ports:
+      - "4000:4000"
+    environment:
+      - DB_HOST=mysql
+      - DB_USER=urbangoal
+      - DB_PASSWORD=urbangoalpass
+      - DB_NAME=urbangoal_db
+    depends_on:
+      - mysql
+  mysql:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: urbangoal_db
+      MYSQL_USER: urbangoal
+      MYSQL_PASSWORD: urbangoalpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:
+
