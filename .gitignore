@@ -8,10 +8,11 @@ dist/
 build/
 *.tsbuildinfo
 
-# Environment variables
+# Environment variables (NUNCA COMITEAR)
 .env
 .env.local
 .env.*.local
+.env.production
 
 # Logs
 *.log
@@ -28,6 +29,18 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Database volumes
+mysql_data/
+
+# Frontend specific
+UrbanGoal_FrontEnd/dist/
+UrbanGoal_FrontEnd/build/
+UrbanGoal_FrontEnd/.next/
+UrbanGoal_FrontEnd/.vite/
+
+# Backend specific
+UrbanGoal_BackEnd/dist/
 *~
 
 # Docker
