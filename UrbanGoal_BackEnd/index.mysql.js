@@ -246,133 +246,111 @@ app.post('/api/orders', async (req, res) => {
     return res.status(400).json({ error: 'Faltan campos requeridos: id, items, customer, total' });
   }
 
+  let connection;
   try {
     // Iniciar transacción para asegurar consistencia
-    const connection = await pool.getConnection();
+    connection = await pool.getConnection();
     await connection.beginTransaction();
 
-    try {
-      // 1. Guardar la orden (sin items JSON)
+    // 1. Guardar la orden (sin items JSON)
+    await connection.query(
+      `INSERT INTO orders (
+        id, customerId, customerName, customerEmail, customerPhone, 
+        metroLine, metroStation, address, totalPrice, paymentMethod, 
+        paymentStatus, notes, createdAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        id,
+        customer.id || null,
+        customer.fullName || customer.name || 'Cliente',
+        customer.email || '',
+        customer.phone || null,
+        metroLine || null,
+        metroStation || null,
+        address || null,
+        total,
+        paymentMethod || 'bank-transfer',
+        status,
+        notes || null
+      ]
+    );
+
+    // 2. Guardar items de la orden en order_items y actualizar stock
+    for (const item of items) {
+      const productId = item.product.id;
+      const quantity = item.quantity;
+      const size = item.size;
+      const itemId = `item-${uuidv4()}`;
+
+      // Obtener el producto actual
+      const [productRows] = await connection.query(
+        'SELECT sizes, price FROM products WHERE id = ?',
+        [productId]
+      );
+
+      if (productRows.length === 0) {
+        throw new Error(`Producto con ID ${productId} no encontrado`);
+      }
+
+      const product = productRows[0];
+      const sizes = typeof product.sizes === 'string' 
+        ? JSON.parse(product.sizes) 
+        : product.sizes;
+
+      // Buscar la talla y actualizar stock
+      const sizeIndex = sizes.findIndex(s => s.value === size);
+      if (sizeIndex === -1) {
+        throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
+      }
+
+      // Restar cantidad del stock
+      sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
+
+      // Guardar item en order_items
       await connection.query(
-        `INSERT INTO orders (
-          id, customerId, customerName, customerEmail, customerPhone, 
-          metroLine, metroStation, address, totalPrice, paymentMethod, 
-          paymentStatus, notes, createdAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [
-          id,
-          customer.id || null,
-          customer.fullName || customer.name || 'Cliente',
-          customer.email || '',
-          customer.phone || null,
-          metroLine || null,
-          metroStation || null,
-          address || null,
-          total,
-          paymentMethod || 'bank-transfer',
-          status,
-          notes || null
-        ]
+        `INSERT INTO order_items (id, orderId, productId, quantity, size, priceAtPurchase, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+        [itemId, id, productId, quantity, size, product.price]
       );
 
-      // 2. Guardar items de la orden en order_items y actualizar stock
-      for (const item of items) {
-        const productId = item.product.id;
-        const quantity = item.quantity;
-        const size = item.size;
-        const itemId = `item-${uuidv4()}`;
-
-        // Obtener el producto actual
-        const [productRows] = await connection.query(
-          'SELECT sizes, price FROM products WHERE id = ?',
-          [productId]
-        );
-
-        if (productRows.length === 0) {
-          throw new Error(`Producto con ID ${productId} no encontrado`);
-        }
-
-        const product = productRows[0];
-        const sizes = typeof product.sizes === 'string' 
-          ? JSON.parse(product.sizes) 
-          : product.sizes;
-
-        // Buscar la talla y actualizar stock
-        const sizeIndex = sizes.findIndex(s => s.value === size);
-        if (sizeIndex === -1) {
-          throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
-        }
-
-        // Restar cantidad del stock
-        sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
-
-        // Guardar item en order_items
-        await connection.query(
-          `INSERT INTO order_items (id, orderId, productId, quantity, size, priceAtPurchase, createdAt)
-           VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-          [itemId, id, productId, quantity, size, product.price]
-        );
-
-        // Actualizar stock del producto
-        await connection.query(
-          'UPDATE products SET sizes = ? WHERE id = ?',
-          [JSON.stringify(sizes), productId]
-        );
-      }
-
-      // Confirmar transacción
-      await connection.commit();
-      connection.release();
-
-      // Obtener la orden completa con items para respuesta
-      const [orderItems] = await pool.query(
-        `SELECT oi.*, p.name, p.brand 
-         FROM order_items oi 
-         JOIN products p ON oi.productId = p.id 
-         WHERE oi.orderId = ?`,
-        [id]
+      // Actualizar stock del producto
+      await connection.query(
+        'UPDATE products SET sizes = ? WHERE id = ?',
+        [JSON.stringify(sizes), productId]
       );
-
-      res.status(201).json({ 
-        message: 'Orden guardada exitosamente', 
-        orderId: id,
-        items: orderItems
-      });
-    } catch (err) {
-      await connection.rollback();
-      connection.release();
-      throw err;
-        if (sizeIndex === -1) {
-          throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
-        }
-
-        // Restar cantidad del stock
-        sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
-
-        // Actualizar producto
-        await connection.query(
-          'UPDATE products SET sizes = ? WHERE id = ?',
-          [JSON.stringify(sizes), productId]
-        );
-      }
-
-      // Confirmar transacción
-      await connection.commit();
-      connection.release();
-
-      res.status(201).json({ 
-        message: 'Orden guardada exitosamente', 
-        orderId: id,
-        status: 'success'
-      });
-    } catch (err) {
-      // Revertir transacción si hay error
-      await connection.rollback();
-      connection.release();
-      throw err;
     }
+
+    // Confirmar transacción
+    await connection.commit();
+
+    // Obtener la orden completa con items para respuesta
+    const [orderItems] = await pool.query(
+      `SELECT oi.*, p.name, p.brand 
+       FROM order_items oi 
+       JOIN products p ON oi.productId = p.id 
+       WHERE oi.orderId = ?`,
+      [id]
+    );
+
+    res.status(201).json({ 
+      message: 'Orden guardada exitosamente', 
+      orderId: id,
+      items: orderItems
+    });
   } catch (err) {
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackErr) {
+        console.error('Error en rollback:', rollbackErr);
+      }
+    }
+    console.error('Error al crear orden:', err);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 });
 

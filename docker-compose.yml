@@ -27,7 +27,7 @@ services:
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: urbangoal
+      MYSQL_DATABASE: urbangoal_db
       MYSQL_USER: urbangoal
       MYSQL_PASSWORD: urbangoalpass
     ports:
