@@ -39,7 +39,9 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json());
+// Aumentar límite de tamaño de payload para imágenes
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.get('/', (req, res) => {
   res.send('UrbanGoal Backend funcionando');
@@ -206,14 +208,105 @@ app.delete('/api/products/:id', async (req, res) => {
 
 // Endpoint para recibir órdenes
 app.post('/api/orders', async (req, res) => {
-  const order = req.body;
+  const { 
+    id, 
+    items, 
+    customer, 
+    paymentMethod, 
+    total, 
+    status = 'pending',
+    metroLine,
+    metroStation,
+    address,
+    notes
+  } = req.body;
+
+  if (!id || !items || !customer || !total) {
+    return res.status(400).json({ error: 'Faltan campos requeridos: id, items, customer, total' });
+  }
+
   try {
-    // Guarda la orden en la base de datos (ajusta los campos según tu modelo)
-    const [result] = await pool.query(
-      'INSERT INTO orders (id, customer, paymentMethod, total, status, createdAt) VALUES (?, ?, ?, ?, ?, ?)',
-      [order.id, JSON.stringify(order.customer), order.paymentMethod, order.total, order.status, new Date(order.createdAt)]
-    );
-    res.status(201).json({ message: 'Orden guardada', orderId: result.insertId });
+    // Iniciar transacción para asegurar consistencia
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // 1. Guardar la orden
+      await connection.query(
+        `INSERT INTO orders (
+          id, customerId, customerName, customerEmail, customerPhone, 
+          metroLine, metroStation, address, items, totalPrice, paymentMethod, 
+          paymentStatus, notes, createdAt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [
+          id,
+          customer.id || null,
+          customer.fullName || customer.name || 'Cliente',
+          customer.email || '',
+          customer.phone || null,
+          metroLine || null,
+          metroStation || null,
+          address || null,
+          JSON.stringify(items),
+          total,
+          paymentMethod || 'bank-transfer',
+          status,
+          notes || null
+        ]
+      );
+
+      // 2. Actualizar stock de productos
+      for (const item of items) {
+        const productId = item.product.id;
+        const quantity = item.quantity;
+        const size = item.size;
+
+        // Obtener el producto actual
+        const [productRows] = await connection.query(
+          'SELECT sizes FROM products WHERE id = ?',
+          [productId]
+        );
+
+        if (productRows.length === 0) {
+          throw new Error(`Producto con ID ${productId} no encontrado`);
+        }
+
+        const product = productRows[0];
+        const sizes = typeof product.sizes === 'string' 
+          ? JSON.parse(product.sizes) 
+          : product.sizes;
+
+        // Buscar la talla y actualizar stock
+        const sizeIndex = sizes.findIndex(s => s.value === size);
+        if (sizeIndex === -1) {
+          throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
+        }
+
+        // Restar cantidad del stock
+        sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
+
+        // Actualizar producto
+        await connection.query(
+          'UPDATE products SET sizes = ? WHERE id = ?',
+          [JSON.stringify(sizes), productId]
+        );
+      }
+
+      // Confirmar transacción
+      await connection.commit();
+      connection.release();
+
+      res.status(201).json({ 
+        message: 'Orden guardada exitosamente', 
+        orderId: id,
+        status: 'success'
+      });
+    } catch (err) {
+      // Revertir transacción si hay error
+      await connection.rollback();
+      connection.release();
+      throw err;
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
