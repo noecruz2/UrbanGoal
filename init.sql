@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS orders (
   updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Crear tabla categories
+CREATE TABLE IF NOT EXISTS categories (
+  id VARCHAR(50) PRIMARY KEY,
+  name VARCHAR(200) NOT NULL,
+  slug VARCHAR(200) UNIQUE NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Crear tabla products
 CREATE TABLE IF NOT EXISTS products (
   id VARCHAR(50) PRIMARY KEY,
@@ -51,6 +60,15 @@ CREATE TABLE IF NOT EXISTS products (
 -- Crear usuario admin por defecto (contraseña hasheada: admin123)
 INSERT IGNORE INTO users (id, email, password, name, role) 
 VALUES ('admin-1', 'admin@tienda.com', '$2a$10$7zKriugfq5xce8d2UknANeP/17FTfZsrMdF31nI79gEQ0e2CqJ/pa', 'Admin', 'admin');
+
+-- Insertar categorías iniciales
+INSERT IGNORE INTO categories (id, name, slug) VALUES
+('cat-1', 'Running', 'running'),
+('cat-2', 'Lifestyle', 'lifestyle'),
+('cat-3', 'Basketball', 'basketball'),
+('cat-4', 'Skate', 'skate'),
+('cat-5', 'Jerseys Mundial 2026', 'mundial-2026'),
+('cat-6', 'Jerseys Liga MX', 'liga-mx');
 
 -- Insertar productos de ejemplo
 INSERT IGNORE INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES

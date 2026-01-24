@@ -361,6 +361,91 @@ app.post('/api/mercadopago/preference', async (req, res) => {
   }
 });
 
+// ====================== ENDPOINTS DE CATEGORÍAS ======================
+
+// Obtener todas las categorías
+app.get('/api/categories', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM categories ORDER BY name');
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Obtener una categoría por ID
+app.get('/api/categories/:id', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM categories WHERE id = ?', [req.params.id]);
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'Categoría no encontrada' });
+    }
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Crear una nueva categoría
+app.post('/api/categories', async (req, res) => {
+  const { id, name, slug } = req.body;
+  
+  if (!id || !name || !slug) {
+    return res.status(400).json({ error: 'id, name y slug son requeridos' });
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO categories (id, name, slug) VALUES (?, ?, ?)',
+      [id, name, slug]
+    );
+    res.status(201).json({ id, name, slug });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'La categoría ya existe' });
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Actualizar una categoría
+app.put('/api/categories/:id', async (req, res) => {
+  const { name, slug } = req.body;
+  const { id } = req.params;
+  
+  if (!name || !slug) {
+    return res.status(400).json({ error: 'name y slug son requeridos' });
+  }
+
+  try {
+    const [result] = await pool.query(
+      'UPDATE categories SET name = ?, slug = ? WHERE id = ?',
+      [name, slug, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Categoría no encontrada' });
+    }
+    res.json({ id, name, slug });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Eliminar una categoría
+app.delete('/api/categories/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const [result] = await pool.query('DELETE FROM categories WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Categoría no encontrada' });
+    }
+    res.status(200).json({ message: 'Categoría eliminada correctamente' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Webhook de Mercado Pago
 app.post('/api/mercadopago/webhook', async (req, res) => {
   try {
