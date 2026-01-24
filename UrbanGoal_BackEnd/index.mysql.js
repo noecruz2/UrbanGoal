@@ -126,7 +126,71 @@ app.get('/api/products/:id', async (req, res) => {
 });
 
 // Endpoint para crear un producto
-// Endpoint para crear producto (DESHABILITADO - usar admin panel en el futuro)
+app.post('/api/products', async (req, res) => {
+  const { id, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
+  try {
+    await pool.query(
+      'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false]
+    );
+    res.status(201).json({ 
+      id, 
+      name, 
+      brand, 
+      price, 
+      originalPrice: originalPrice || null, 
+      images, 
+      description, 
+      sizes, 
+      category, 
+      featured: featured || false 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint para actualizar un producto
+app.put('/api/products/:id', async (req, res) => {
+  const { id: bodyId, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
+  const { id: paramId } = req.params;
+  try {
+    await pool.query(
+      'UPDATE products SET name = ?, brand = ?, price = ?, originalPrice = ?, images = ?, description = ?, sizes = ?, category = ?, featured = ? WHERE id = ?',
+      [name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false, paramId]
+    );
+    res.status(200).json({ 
+      id: paramId,
+      name, 
+      brand, 
+      price, 
+      originalPrice: originalPrice || null, 
+      images, 
+      description, 
+      sizes, 
+      category, 
+      featured: featured || false 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint para eliminar un producto
+app.delete('/api/products/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM products WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+    res.status(200).json({ message: 'Producto eliminado correctamente' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint anterior para crear producto (DESHABILITADO - usar admin panel en el futuro)
 // app.post('/api/products', async (req, res) => {
 //   const { id, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
 //   try {
