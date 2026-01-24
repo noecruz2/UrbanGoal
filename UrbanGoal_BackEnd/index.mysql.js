@@ -88,8 +88,29 @@ app.post('/api/auth/login', async (req, res) => {
 // ====================== ENDPOINTS DE ÓRDENES ======================
 app.get('/api/orders', async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM orders');
-    res.json(rows);
+    const [orders] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
+    
+    // Obtener items para cada orden
+    const ordersWithItems = await Promise.all(
+      orders.map(async (order) => {
+        const [items] = await pool.query(
+          `SELECT oi.*, p.name, p.brand, p.images
+           FROM order_items oi
+           JOIN products p ON oi.productId = p.id
+           WHERE oi.orderId = ?`,
+          [order.id]
+        );
+        return {
+          ...order,
+          items: items.map(item => ({
+            ...item,
+            images: typeof item.images === 'string' ? JSON.parse(item.images) : item.images
+          }))
+        };
+      })
+    );
+    
+    res.json(ordersWithItems);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -231,13 +252,13 @@ app.post('/api/orders', async (req, res) => {
     await connection.beginTransaction();
 
     try {
-      // 1. Guardar la orden
+      // 1. Guardar la orden (sin items JSON)
       await connection.query(
         `INSERT INTO orders (
           id, customerId, customerName, customerEmail, customerPhone, 
-          metroLine, metroStation, address, items, totalPrice, paymentMethod, 
+          metroLine, metroStation, address, totalPrice, paymentMethod, 
           paymentStatus, notes, createdAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
         [
           id,
           customer.id || null,
@@ -247,7 +268,6 @@ app.post('/api/orders', async (req, res) => {
           metroLine || null,
           metroStation || null,
           address || null,
-          JSON.stringify(items),
           total,
           paymentMethod || 'bank-transfer',
           status,
@@ -255,15 +275,16 @@ app.post('/api/orders', async (req, res) => {
         ]
       );
 
-      // 2. Actualizar stock de productos
+      // 2. Guardar items de la orden en order_items y actualizar stock
       for (const item of items) {
         const productId = item.product.id;
         const quantity = item.quantity;
         const size = item.size;
+        const itemId = `item-${uuidv4()}`;
 
         // Obtener el producto actual
         const [productRows] = await connection.query(
-          'SELECT sizes FROM products WHERE id = ?',
+          'SELECT sizes, price FROM products WHERE id = ?',
           [productId]
         );
 
@@ -278,6 +299,49 @@ app.post('/api/orders', async (req, res) => {
 
         // Buscar la talla y actualizar stock
         const sizeIndex = sizes.findIndex(s => s.value === size);
+        if (sizeIndex === -1) {
+          throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
+        }
+
+        // Restar cantidad del stock
+        sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
+
+        // Guardar item en order_items
+        await connection.query(
+          `INSERT INTO order_items (id, orderId, productId, quantity, size, priceAtPurchase, createdAt)
+           VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+          [itemId, id, productId, quantity, size, product.price]
+        );
+
+        // Actualizar stock del producto
+        await connection.query(
+          'UPDATE products SET sizes = ? WHERE id = ?',
+          [JSON.stringify(sizes), productId]
+        );
+      }
+
+      // Confirmar transacción
+      await connection.commit();
+      connection.release();
+
+      // Obtener la orden completa con items para respuesta
+      const [orderItems] = await pool.query(
+        `SELECT oi.*, p.name, p.brand 
+         FROM order_items oi 
+         JOIN products p ON oi.productId = p.id 
+         WHERE oi.orderId = ?`,
+        [id]
+      );
+
+      res.status(201).json({ 
+        message: 'Orden guardada exitosamente', 
+        orderId: id,
+        items: orderItems
+      });
+    } catch (err) {
+      await connection.rollback();
+      connection.release();
+      throw err;
         if (sizeIndex === -1) {
           throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
         }

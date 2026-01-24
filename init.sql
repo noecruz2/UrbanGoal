@@ -23,13 +23,28 @@ CREATE TABLE IF NOT EXISTS orders (
   metroLine VARCHAR(50),
   metroStation VARCHAR(100),
   address TEXT,
-  items JSON NOT NULL,
   totalPrice DECIMAL(10, 2) NOT NULL,
   paymentMethod VARCHAR(50),
   paymentStatus VARCHAR(50) DEFAULT 'pending',
   notes TEXT,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (customerId) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Crear tabla order_items (líneas de pedido)
+CREATE TABLE IF NOT EXISTS order_items (
+  id VARCHAR(50) PRIMARY KEY,
+  orderId VARCHAR(50) NOT NULL,
+  productId VARCHAR(50) NOT NULL,
+  quantity INT NOT NULL,
+  size VARCHAR(50) NOT NULL,
+  priceAtPurchase DECIMAL(10, 2) NOT NULL,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
+  FOREIGN KEY (productId) REFERENCES products(id) ON DELETE RESTRICT,
+  INDEX idx_orderId (orderId),
+  INDEX idx_productId (productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Crear tabla categories
