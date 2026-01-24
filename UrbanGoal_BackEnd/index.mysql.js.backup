@@ -145,8 +145,7 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 });
 
 // ====================== ENDPOINTS DE ÓRDENES ======================
-// Obtener órdenes (solo admin)
-app.get('/api/orders', verifyAuth, verifyAdmin, async (req, res) => {
+app.get('/api/orders', async (req, res) => {
   try {
     const [orders] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
     
