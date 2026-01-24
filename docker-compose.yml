@@ -17,6 +17,9 @@ services:
       - DB_USER=urbangoal
       - DB_PASSWORD=urbangoalpass
       - DB_NAME=urbangoal_db
+      - MP_ACCESS_TOKEN=${MP_ACCESS_TOKEN}
+      - FRONTEND_URL=http://localhost:3000
+      - BACKEND_URL=http://localhost:4000
     depends_on:
       - mysql
   mysql:
@@ -24,13 +27,14 @@ services:
     restart: always
     environment:
       MYSQL_ROOT_PASSWORD: rootpass
-      MYSQL_DATABASE: urbangoal_db
+      MYSQL_DATABASE: urbangoal
       MYSQL_USER: urbangoal
       MYSQL_PASSWORD: urbangoalpass
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
 
 volumes:
   mysql_data:

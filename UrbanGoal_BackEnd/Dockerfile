@@ -5,7 +5,7 @@ WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm install mysql2 express
+RUN npm install
 
 COPY . .
 

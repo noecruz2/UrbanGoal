@@ -1,106 +1,43 @@
 import express from 'express';
 import mysql from 'mysql2/promise';
+import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+import { MercadoPagoConfig, Preference } from 'mercadopago';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+
+// Configuración de Mercado Pago
+const mpConfig = new MercadoPagoConfig({
+  accessToken: process.env.MP_ACCESS_TOKEN || '',
+  options: { timeout: 20000 }
+});
 
 // Configuración de conexión MySQL desde variables de entorno
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'urbangoal',
   password: process.env.DB_PASSWORD || 'urbangoalpass',
-  database: process.env.DB_NAME || 'urbangoal_db',
+  database: 'urbangoal_db',
 };
 
 
 let pool;
 (async () => {
   pool = await mysql.createPool(dbConfig);
-  console.log('Conectado a MySQL');
-  
-  // Crear tabla orders si no existe
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS orders (
-      id VARCHAR(50) PRIMARY KEY,
-      customer JSON NOT NULL,
-      paymentMethod VARCHAR(20) NOT NULL,
-      total DECIMAL(10,2) NOT NULL,
-      status VARCHAR(20) NOT NULL,
-      createdAt DATETIME NOT NULL
-    )
-  `);
-  console.log('Tabla orders verificada/creada');
-
-  // Crear tabla products si no existe
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS products (
-      id VARCHAR(50) PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      brand VARCHAR(100) NOT NULL,
-      price DECIMAL(10,2) NOT NULL,
-      originalPrice DECIMAL(10,2),
-      images JSON NOT NULL,
-      description TEXT NOT NULL,
-      sizes JSON NOT NULL,
-      category VARCHAR(100) NOT NULL,
-      featured BOOLEAN DEFAULT FALSE,
-      createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )
-  `);
-  console.log('Tabla products verificada/creada');
-
-  // Insertar productos de prueba si la tabla está vacía
-  const [products] = await pool.query('SELECT COUNT(*) as count FROM products');
-  if (products[0].count === 0) {
-    const sampleProducts = [
-      {
-        id: 'prod-1',
-        name: 'Air Jordan 1 Retro',
-        brand: 'Nike',
-        price: 120,
-        originalPrice: 180,
-        images: JSON.stringify(['https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&q=80']),
-        description: 'Zapatillas clásicas de baloncesto con estilo retro',
-        sizes: JSON.stringify([{ value: '36', stock: 5 }, { value: '37', stock: 3 }, { value: '38', stock: 8 }, { value: '39', stock: 2 }]),
-        category: 'tenis',
-        featured: true
-      },
-      {
-        id: 'prod-2',
-        name: 'Adidas Superstar',
-        brand: 'Adidas',
-        price: 90,
-        originalPrice: 110,
-        images: JSON.stringify(['https://images.unsplash.com/photo-1587563871167-1ee9c731aefb?w=800&q=80']),
-        description: 'Las icónicas Superstar con la clásica banda de tres rayas',
-        sizes: JSON.stringify([{ value: '36', stock: 4 }, { value: '37', stock: 6 }, { value: '38', stock: 5 }]),
-        category: 'tenis',
-        featured: true
-      },
-      {
-        id: 'prod-3',
-        name: 'Puma RS-X',
-        brand: 'Puma',
-        price: 85,
-        originalPrice: 120,
-        images: JSON.stringify(['https://images.unsplash.com/photo-1560769629-975ec94e6a86?w=800&q=80']),
-        description: 'Zapatillas deportivas modernas y cómodas',
-        sizes: JSON.stringify([{ value: '36', stock: 3 }, { value: '37', stock: 5 }, { value: '38', stock: 7 }, { value: '39', stock: 4 }]),
-        category: 'tenis',
-        featured: false
-      }
-    ];
-
-    for (const product of sampleProducts) {
-      await pool.query(
-        'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [product.id, product.name, product.brand, product.price, product.originalPrice, product.images, product.description, product.sizes, product.category, product.featured]
-      );
-    }
-    console.log('Productos de prueba insertados');
-  }
+  console.log('Conectado a MySQL - Tablas esperadas desde init.sql');
 })();
+
+// Configurar CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 app.use(express.json());
 
@@ -108,7 +45,45 @@ app.get('/', (req, res) => {
   res.send('UrbanGoal Backend funcionando');
 });
 
-// Endpoint de prueba para leer órdenes (tabla orders debe existir)
+// ====================== ENDPOINTS DE AUTENTICACIÓN ======================
+
+// Login de usuario
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email y password son requeridos' });
+    }
+
+    // Buscar usuario
+    const [users] = await pool.query('SELECT id, email, password, name, role FROM users WHERE email = ?', [email]);
+    
+    if (users.length === 0) {
+      return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
+
+    const user = users[0];
+
+    // Verificar contraseña
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role
+    });
+  } catch (err) {
+    console.error('Error en login:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ====================== ENDPOINTS DE ÓRDENES ======================
 app.get('/api/orders', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM orders');
@@ -151,18 +126,19 @@ app.get('/api/products/:id', async (req, res) => {
 });
 
 // Endpoint para crear un producto
-app.post('/api/products', async (req, res) => {
-  const { id, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
-  try {
-    await pool.query(
-      'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false]
-    );
-    res.status(201).json({ message: 'Producto creado', productId: id });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// Endpoint para crear producto (DESHABILITADO - usar admin panel en el futuro)
+// app.post('/api/products', async (req, res) => {
+//   const { id, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
+//   try {
+//     await pool.query(
+//       'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+//       [id, name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false]
+//     );
+//     res.status(201).json({ message: 'Producto creado', productId: id });
+//   } catch (err) {
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 // Endpoint para recibir órdenes
 app.post('/api/orders', async (req, res) => {
@@ -175,6 +151,72 @@ app.post('/api/orders', async (req, res) => {
     );
     res.status(201).json({ message: 'Orden guardada', orderId: result.insertId });
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Endpoint para crear preferencia de pago en Mercado Pago
+app.post('/api/mercadopago/preference', async (req, res) => {
+  try {
+    const { items, customer, orderId } = req.body;
+
+    const preference = new Preference(mpConfig);
+    
+    const preferenceData = {
+      items: items.map(item => ({
+        id: item.product.id,
+        title: `${item.product.name} (Talla ${item.size})`,
+        quantity: item.quantity,
+        unit_price: item.product.price,
+        currency_id: 'COP',
+      })),
+      payer: {
+        name: customer.fullName,
+        phone: {
+          area_code: '+57',
+          number: customer.phone,
+        },
+        address: {
+          street_name: customer.address || 'No especificado',
+        },
+      },
+      back_urls: {
+        success: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/confirmation?status=success&order_id=${orderId}`,
+        failure: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/confirmation?status=failure&order_id=${orderId}`,
+        pending: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/confirmation?status=pending&order_id=${orderId}`,
+      },
+      notification_url: `${process.env.BACKEND_URL || 'http://localhost:4000'}/api/mercadopago/webhook`,
+      external_reference: orderId,
+      metadata: {
+        order_id: orderId,
+        customer: JSON.stringify(customer),
+      },
+    };
+
+    const preferenceResponse = await preference.create({ body: preferenceData });
+    res.json({ 
+      initPoint: preferenceResponse.init_point,
+      preferenceId: preferenceResponse.id 
+    });
+  } catch (err) {
+    console.error('Error en Mercado Pago:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Webhook de Mercado Pago
+app.post('/api/mercadopago/webhook', async (req, res) => {
+  try {
+    const { data, type } = req.query;
+
+    if (type === 'payment') {
+      console.log('Pago recibido:', data);
+      // Aquí puedes actualizar el estado de la orden en la BD
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error en webhook:', err);
     res.status(500).json({ error: err.message });
   }
 });
