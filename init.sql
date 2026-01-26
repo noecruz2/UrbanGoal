@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   priceAtPurchase DECIMAL(10, 2) NOT NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (orderId) REFERENCES orders(id) ON DELETE CASCADE,
-  FOREIGN KEY (productId) REFERENCES products(id) ON DELETE RESTRICT,
+  FOREIGN KEY (productId) REFERENCES products(id) ON DELETE CASCADE,
   INDEX idx_orderId (orderId),
   INDEX idx_productId (productId)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

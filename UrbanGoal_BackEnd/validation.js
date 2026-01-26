@@ -33,24 +33,12 @@ export const validatePassword = (password) => {
     return { isValid: false, error: 'Contraseña es requerida' };
   }
 
-  if (password.length < 8) {
-    return { isValid: false, error: 'Contraseña debe tener mínimo 8 caracteres' };
+  if (password.length < 6) {
+    return { isValid: false, error: 'Contraseña debe tener mínimo 6 caracteres' };
   }
 
   if (password.length > 128) {
     return { isValid: false, error: 'Contraseña muy larga (máximo 128 caracteres)' };
-  }
-
-  // Validar que tenga al menos: mayúscula, minúscula, número
-  const hasUpperCase = /[A-Z]/.test(password);
-  const hasLowerCase = /[a-z]/.test(password);
-  const hasNumber = /[0-9]/.test(password);
-
-  if (!hasUpperCase || !hasLowerCase || !hasNumber) {
-    return { 
-      isValid: false, 
-      error: 'Contraseña debe contener mayúsculas, minúsculas y números' 
-    };
   }
 
   return { isValid: true, error: null, value: password };

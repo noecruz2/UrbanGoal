@@ -8,7 +8,11 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { generateToken, verifyAuth, verifyAdmin } from './auth-middleware.js';
 import validation from './validation.js';
+import { sanitizeInputs } from './input-validation.js';
 import dotenv from 'dotenv';
+import { sendOrderConfirmation, sendAdminNotification } from './email-service.js';
+import { sendOrderNotificationWhatsApp, sendAdminNotificationWhatsApp } from './whatsapp-service.js';
+import { uploadMultipleImages, processAndSaveImages, deleteImages } from './image-upload.js';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -90,6 +94,12 @@ app.use('/api/', apiLimiter);
 // Aumentar límite de tamaño de payload para imágenes
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// Sanitizar todos los inputs para prevenir XSS e inyecciones
+app.use(sanitizeInputs);
+
+// Servir archivos estáticos (imágenes subidas)
+app.use('/uploads', express.static('public/uploads'));
 
 app.get('/', (req, res) => {
   res.send('UrbanGoal Backend funcionando');
@@ -208,10 +218,44 @@ app.get('/api/products/:id', async (req, res) => {
   }
 });
 
-// Endpoint para crear un producto
-app.post('/api/products', async (req, res) => {
-  const { id, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
+// Endpoint para crear un producto (PROTEGIDO - Solo Admin)
+// Puede subir imágenes o enviar URLs
+app.post('/api/products', verifyAuth, verifyAdmin, uploadMultipleImages, async (req, res) => {
+  const { id, name, brand, price, originalPrice, description, sizes, category, featured, images: bodyImages } = req.body;
+  
+  // Validación de inputs
+  if (!id || !name || !brand || !price || !sizes || !category) {
+    return res.status(400).json({ error: 'Faltan campos requeridos' });
+  }
+  
+  // Validar que price es un número positivo
+  if (isNaN(price) || price <= 0) {
+    return res.status(400).json({ error: 'Precio debe ser un número positivo' });
+  }
+  
+  // Validar que sizes es un array
+  if (!Array.isArray(sizes)) {
+    return res.status(400).json({ error: 'Sizes debe ser un array' });
+  }
+  
   try {
+    let images = [];
+
+    // Si hay archivos subidos, procesarlos
+    if (req.files && req.files.length > 0) {
+      const uploadedImages = await processAndSaveImages(req.files);
+      images = uploadedImages.map(img => img.url);
+    } 
+    // Si vienen URLs en el body, usarlas
+    else if (bodyImages && Array.isArray(bodyImages) && bodyImages.length > 0) {
+      images = bodyImages;
+    }
+
+    // Si no hay imágenes, retornar error
+    if (images.length === 0) {
+      return res.status(400).json({ error: 'Debes subir al menos una imagen o proporcionar URLs' });
+    }
+
     await pool.query(
       'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [id, name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false]
@@ -229,18 +273,80 @@ app.post('/api/products', async (req, res) => {
       featured: featured || false 
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al crear producto:', err);
+    res.status(500).json({ error: 'Error al crear producto' });
   }
 });
 
-// Endpoint para actualizar un producto
-app.put('/api/products/:id', async (req, res) => {
-  const { id: bodyId, name, brand, price, originalPrice, images, description, sizes, category, featured } = req.body;
+// Endpoint para actualizar un producto (PROTEGIDO - Solo Admin)
+app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, async (req, res) => {
+  const { id: bodyId, name, brand, price, originalPrice, description, sizes, category, featured } = req.body;
   const { id: paramId } = req.params;
+  
+  // Validación de inputs
+  if (!name || !brand || !price || !sizes || !category) {
+    return res.status(400).json({ error: 'Faltan campos requeridos' });
+  }
+  
+  // Validar que price es un número positivo
+  if (isNaN(price) || price <= 0) {
+    return res.status(400).json({ error: 'Precio debe ser un número positivo' });
+  }
+  
   try {
+    let images = [];
+    let parsedSizes = sizes;
+
+    // Parsear sizes si viene como string JSON
+    if (typeof sizes === 'string') {
+      try {
+        parsedSizes = JSON.parse(sizes);
+      } catch (e) {
+        parsedSizes = sizes;
+      }
+    }
+
+    // Si hay nuevos archivos subidos, procesarlos
+    if (req.files && req.files.length > 0) {
+      const uploadedImages = await processAndSaveImages(req.files);
+      images = uploadedImages.map(img => img.url);
+      
+      // Agregar imágenes existentes (URLs que vienen en el body)
+      let bodyImages = req.body.images;
+      if (typeof bodyImages === 'string') {
+        try {
+          bodyImages = JSON.parse(bodyImages);
+        } catch (e) {
+          bodyImages = [];
+        }
+      }
+      if (Array.isArray(bodyImages) && bodyImages.length > 0) {
+        images = [...bodyImages, ...images];
+      }
+    } 
+    // Si vienen URLs en el body, usarlas
+    else if (req.body.images) {
+      let bodyImages = req.body.images;
+      if (typeof bodyImages === 'string') {
+        try {
+          bodyImages = JSON.parse(bodyImages);
+        } catch (e) {
+          bodyImages = [];
+        }
+      }
+      if (Array.isArray(bodyImages)) {
+        images = bodyImages;
+      }
+    }
+
+    // Si no hay imágenes, retornar error
+    if (images.length === 0) {
+      return res.status(400).json({ error: 'Debes tener al menos una imagen' });
+    }
+
     await pool.query(
       'UPDATE products SET name = ?, brand = ?, price = ?, originalPrice = ?, images = ?, description = ?, sizes = ?, category = ?, featured = ? WHERE id = ?',
-      [name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false, paramId]
+      [name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(parsedSizes), category, featured || false, paramId]
     );
     res.status(200).json({ 
       id: paramId,
@@ -250,18 +356,25 @@ app.put('/api/products/:id', async (req, res) => {
       originalPrice: originalPrice || null, 
       images, 
       description, 
-      sizes, 
+      sizes: parsedSizes, 
       category, 
       featured: featured || false 
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al actualizar producto:', err);
+    res.status(500).json({ error: 'Error al actualizar producto' });
   }
 });
 
-// Endpoint para eliminar un producto
-app.delete('/api/products/:id', async (req, res) => {
+// Endpoint para eliminar un producto (PROTEGIDO - Solo Admin)
+app.delete('/api/products/:id', verifyAuth, verifyAdmin, async (req, res) => {
   const { id } = req.params;
+  
+  // Validar que ID es válido
+  if (!id || typeof id !== 'string' || id.trim().length === 0) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
+  
   try {
     const [result] = await pool.query('DELETE FROM products WHERE id = ?', [id]);
     if (result.affectedRows === 0) {
@@ -269,7 +382,8 @@ app.delete('/api/products/:id', async (req, res) => {
     }
     res.status(200).json({ message: 'Producto eliminado correctamente' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al eliminar producto:', err);
+    res.status(500).json({ error: 'Error al eliminar producto' });
   }
 });
 
@@ -287,7 +401,7 @@ app.delete('/api/products/:id', async (req, res) => {
 //   }
 // });
 
-// Endpoint para recibir órdenes
+// Endpoint para recibir órdenes (CON VALIDACIÓN MEJORADA)
 app.post('/api/orders', async (req, res) => {
   const { 
     id, 
@@ -302,8 +416,50 @@ app.post('/api/orders', async (req, res) => {
     notes
   } = req.body;
 
+  // Validación exhaustiva de inputs
   if (!id || !items || !customer || !total) {
     return res.status(400).json({ error: 'Faltan campos requeridos: id, items, customer, total' });
+  }
+
+  // Validar que id es string
+  if (typeof id !== 'string' || id.trim().length === 0) {
+    return res.status(400).json({ error: 'ID debe ser un string válido' });
+  }
+
+  // Validar que items es un array no vacío
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: 'items debe ser un array no vacío' });
+  }
+
+  // Validar que cada item tiene los campos necesarios
+  for (const item of items) {
+    if (!item.product || !item.product.id || !item.quantity || !item.size) {
+      return res.status(400).json({ error: 'Cada item debe tener product, quantity y size' });
+    }
+    if (isNaN(item.quantity) || item.quantity <= 0) {
+      return res.status(400).json({ error: 'quantity debe ser un número positivo' });
+    }
+  }
+
+  // Validar customer
+  if (typeof customer !== 'object' || !customer.fullName || !customer.email) {
+    return res.status(400).json({ error: 'customer debe tener fullName y email' });
+  }
+
+  // Validar email
+  if (!validation.validateEmail(customer.email).isValid) {
+    return res.status(400).json({ error: 'Email inválido' });
+  }
+
+  // Validar que total es un número positivo
+  if (isNaN(total) || total <= 0) {
+    return res.status(400).json({ error: 'total debe ser un número positivo' });
+  }
+
+  // Validar paymentMethod
+  const validPaymentMethods = ['mercadopago', 'transfer', 'cash'];
+  if (!validPaymentMethods.includes(paymentMethod)) {
+    return res.status(400).json({ error: `paymentMethod debe ser uno de: ${validPaymentMethods.join(', ')}` });
   }
 
   let connection;
@@ -391,6 +547,44 @@ app.post('/api/orders', async (req, res) => {
        WHERE oi.orderId = ?`,
       [id]
     );
+
+    // Enviar email de confirmación de forma asíncrona (no bloquear respuesta)
+    if (customer.email) {
+      sendOrderConfirmation(
+        customer.email,
+        customer.fullName || customer.name || 'Cliente',
+        id,
+        orderItems,
+        total
+      ).catch(err => console.error('Error enviando email:', err));
+    }
+
+    // Enviar notificación por WhatsApp al cliente
+    if (customer.phone) {
+      sendOrderNotificationWhatsApp(
+        customer.phone,
+        customer.fullName || customer.name || 'Cliente',
+        id,
+        total
+      ).catch(err => console.error('Error enviando WhatsApp:', err));
+    }
+
+    // Notificar al admin por email
+    sendAdminNotification(
+      id,
+      customer.fullName || customer.name || 'Cliente',
+      customer.phone || 'No especificado',
+      total
+    ).catch(err => console.error('Error enviando email admin:', err));
+
+    // Notificar al admin por WhatsApp (si está configurado)
+    sendAdminNotificationWhatsApp(
+      '525574756704',
+      customer.fullName || customer.name || 'Cliente',
+      id,
+      customer.phone || 'No especificado',
+      total
+    ).catch(err => console.error('Error enviando WhatsApp admin:', err));
 
     res.status(201).json({ 
       message: 'Orden guardada exitosamente', 
@@ -488,12 +682,21 @@ app.get('/api/categories/:id', async (req, res) => {
   }
 });
 
-// Crear una nueva categoría
-app.post('/api/categories', async (req, res) => {
+// Crear una nueva categoría (PROTEGIDO - Solo Admin)
+app.post('/api/categories', verifyAuth, verifyAdmin, async (req, res) => {
   const { id, name, slug } = req.body;
   
   if (!id || !name || !slug) {
     return res.status(400).json({ error: 'id, name y slug son requeridos' });
+  }
+  
+  // Validar que name y slug son strings válidos
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'name debe ser un string válido' });
+  }
+  
+  if (typeof slug !== 'string' || slug.trim().length === 0) {
+    return res.status(400).json({ error: 'slug debe ser un string válido' });
   }
 
   try {
@@ -506,17 +709,27 @@ app.post('/api/categories', async (req, res) => {
     if (err.code === 'ER_DUP_ENTRY') {
       return res.status(409).json({ error: 'La categoría ya existe' });
     }
-    res.status(500).json({ error: err.message });
+    console.error('Error al crear categoría:', err);
+    res.status(500).json({ error: 'Error al crear categoría' });
   }
 });
 
-// Actualizar una categoría
-app.put('/api/categories/:id', async (req, res) => {
+// Actualizar una categoría (PROTEGIDO - Solo Admin)
+app.put('/api/categories/:id', verifyAuth, verifyAdmin, async (req, res) => {
   const { name, slug } = req.body;
   const { id } = req.params;
   
   if (!name || !slug) {
     return res.status(400).json({ error: 'name y slug son requeridos' });
+  }
+  
+  // Validar que name y slug son strings válidos
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return res.status(400).json({ error: 'name debe ser un string válido' });
+  }
+  
+  if (typeof slug !== 'string' || slug.trim().length === 0) {
+    return res.status(400).json({ error: 'slug debe ser un string válido' });
   }
 
   try {
@@ -529,13 +742,19 @@ app.put('/api/categories/:id', async (req, res) => {
     }
     res.json({ id, name, slug });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al actualizar categoría:', err);
+    res.status(500).json({ error: 'Error al actualizar categoría' });
   }
 });
 
-// Eliminar una categoría
-app.delete('/api/categories/:id', async (req, res) => {
+// Eliminar una categoría (PROTEGIDO - Solo Admin)
+app.delete('/api/categories/:id', verifyAuth, verifyAdmin, async (req, res) => {
   const { id } = req.params;
+  
+  // Validar que ID es válido
+  if (!id || typeof id !== 'string' || id.trim().length === 0) {
+    return res.status(400).json({ error: 'ID inválido' });
+  }
   
   try {
     const [result] = await pool.query('DELETE FROM categories WHERE id = ?', [id]);
@@ -544,7 +763,8 @@ app.delete('/api/categories/:id', async (req, res) => {
     }
     res.status(200).json({ message: 'Categoría eliminada correctamente' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al eliminar categoría:', err);
+    res.status(500).json({ error: 'Error al eliminar categoría' });
   }
 });
 
