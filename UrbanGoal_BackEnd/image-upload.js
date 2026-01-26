@@ -50,14 +50,17 @@ export async function processAndSaveImages(files) {
 
   for (const file of files) {
     try {
+      console.log(`[ImageUpload] Procesando archivo: ${file.originalname} (${file.size} bytes)`);
+      
       // Generar nombre de archivo único
       const timestamp = Date.now();
       const random = Math.floor(Math.random() * 10000);
-      const ext = path.extname(file.originalname);
-      const filename = `product-${timestamp}-${random}${ext}`;
+      const filename = `product-${timestamp}-${random}.jpg`;
       const filepath = path.join(uploadsDir, filename);
 
-      // Procesar imagen: redimensionar y optimizar
+      console.log(`[ImageUpload] Guardando en: ${filepath}`);
+
+      // Procesar imagen: redimensionar y optimizar como JPEG
       await sharp(file.buffer)
         .resize(1200, 1200, {
           fit: 'inside',
@@ -66,6 +69,8 @@ export async function processAndSaveImages(files) {
         })
         .jpeg({ quality: 90, progressive: true })
         .toFile(filepath);
+
+      console.log(`[ImageUpload] Imagen guardada exitosamente`);
 
       // Guardar también una versión thumbnail (300x300)
       const thumbFilename = `product-${timestamp}-${random}-thumb.jpg`;
@@ -86,12 +91,15 @@ export async function processAndSaveImages(files) {
         filename: filename
       });
 
+      console.log(`[ImageUpload] URL agregada: ${imageUrl}`);
+
     } catch (err) {
-      console.error(`Error procesando imagen ${file.originalname}:`, err);
+      console.error(`[ImageUpload] Error procesando ${file.originalname}:`, err);
       throw new Error(`Error procesando imagen: ${err.message}`);
     }
   }
 
+  console.log(`[ImageUpload] Total de imágenes procesadas: ${imageUrls.length}`);
   return imageUrls;
 }
 

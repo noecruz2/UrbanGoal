@@ -42,8 +42,11 @@ let pool;
 
 // ==================== SEGURIDAD ====================
 
-// Helmet para HTTP security headers
-app.use(helmet());
+// Helmet para HTTP security headers - CSP desactivado para permitir el acceso a imágenes
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: false
+}));
 
 // CORS mejorado - whitelist de orígenes permitidos
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',').map(o => o.trim());
@@ -280,7 +283,7 @@ app.post('/api/products', verifyAuth, verifyAdmin, uploadMultipleImages, async (
 
 // Endpoint para actualizar un producto (PROTEGIDO - Solo Admin)
 app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, async (req, res) => {
-  const { id: bodyId, name, brand, price, originalPrice, description, sizes, category, featured } = req.body;
+  const { id: bodyId, name, brand, price, originalPrice, description, sizes, category, featured, existingImages } = req.body;
   const { id: paramId } = req.params;
   
   // Validación de inputs
@@ -306,37 +309,34 @@ app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, asyn
       }
     }
 
+    // Parsear imágenes existentes
+    let existingImagesList = [];
+    if (existingImages) {
+      if (typeof existingImages === 'string') {
+        try {
+          existingImagesList = JSON.parse(existingImages);
+        } catch (e) {
+          existingImagesList = [];
+        }
+      } else if (Array.isArray(existingImages)) {
+        existingImagesList = existingImages;
+      }
+    }
+
     // Si hay nuevos archivos subidos, procesarlos
     if (req.files && req.files.length > 0) {
+      console.log(`[PUT] Procesando ${req.files.length} archivos nuevos`);
       const uploadedImages = await processAndSaveImages(req.files);
-      images = uploadedImages.map(img => img.url);
+      const newImageUrls = uploadedImages.map(img => img.url);
+      console.log(`[PUT] URLs de imágenes nuevas:`, newImageUrls);
       
-      // Agregar imágenes existentes (URLs que vienen en el body)
-      let bodyImages = req.body.images;
-      if (typeof bodyImages === 'string') {
-        try {
-          bodyImages = JSON.parse(bodyImages);
-        } catch (e) {
-          bodyImages = [];
-        }
-      }
-      if (Array.isArray(bodyImages) && bodyImages.length > 0) {
-        images = [...bodyImages, ...images];
-      }
+      // Combinar imágenes existentes con nuevas
+      images = [...existingImagesList, ...newImageUrls];
+      console.log(`[PUT] Total de imágenes después de combinar: ${images.length}`);
     } 
-    // Si vienen URLs en el body, usarlas
-    else if (req.body.images) {
-      let bodyImages = req.body.images;
-      if (typeof bodyImages === 'string') {
-        try {
-          bodyImages = JSON.parse(bodyImages);
-        } catch (e) {
-          bodyImages = [];
-        }
-      }
-      if (Array.isArray(bodyImages)) {
-        images = bodyImages;
-      }
+    // Si no hay archivos nuevos, usar solo las existentes
+    else if (existingImagesList.length > 0) {
+      images = existingImagesList;
     }
 
     // Si no hay imágenes, retornar error
