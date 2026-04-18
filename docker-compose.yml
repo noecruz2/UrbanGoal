@@ -36,9 +36,6 @@ services:
       - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
     depends_on:
       - mysql
-    # No exponemos el puerto 4000 en producción, usar reverse proxy
-    # ports:
-    #   - "4000:4000"
     networks:
       - urbangoal_network
 
@@ -52,8 +49,8 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-urbangoalpass}
     # NO EXPONER MYSQL EN PRODUCCIÓN
     # Solo accesible desde la red interna
-    # ports:
-    #   - "3306:3306"
+    ports:
+      - "3309:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql

@@ -11,4 +11,4 @@ COPY . .
 
 EXPOSE 4000
 
-CMD ["node", "index.mysql.js"]
+CMD ["node", "index.js"]

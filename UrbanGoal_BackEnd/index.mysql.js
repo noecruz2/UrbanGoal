@@ -1,3 +1,5 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import express from 'express';
 import mysql from 'mysql2/promise';
 import bcrypt from 'bcryptjs';
@@ -13,6 +15,10 @@ import dotenv from 'dotenv';
 import { sendOrderConfirmation, sendAdminNotification } from './email-service.js';
 import { sendOrderNotificationWhatsApp, sendAdminNotificationWhatsApp } from './whatsapp-service.js';
 import { uploadMultipleImages, processAndSaveImages, deleteImages } from './image-upload.js';
+
+// Definir __dirname para módulos ESM
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Cargar variables de entorno
 dotenv.config();
@@ -36,8 +42,28 @@ const dbConfig = {
 
 let pool;
 (async () => {
-  pool = await mysql.createPool(dbConfig);
-  console.log('Conectado a MySQL - Tablas esperadas desde init.sql');
+  try {
+    pool = await mysql.createPool(dbConfig);
+    console.log('Conectado a MySQL - Tablas esperadas desde init.sql');
+    
+    // Auto-migración robusta: Asegurar que la columna 'type' exista
+    // Añadimos un pequeño delay inicial para asegurar que MySQL esté listo para DDL
+    setTimeout(async () => {
+      try {
+        console.log('[DB-Migration] Verificando columna "type" en tabla "products"...');
+        await pool.query("ALTER TABLE products ADD COLUMN type VARCHAR(50) DEFAULT 'tenis';");
+        console.log('[DB-Migration] ÉXITO: Columna "type" añadida a la tabla "products"');
+      } catch (err) {
+        if (err.code === 'ER_DUP_FIELDNAME' || err.message.includes('Duplicate column')) {
+          console.log('[DB-Migration] INFO: La columna "type" ya existe, todo en orden.');
+        } else {
+          console.error('[DB-Migration] ERROR:', err.message);
+        }
+      }
+    }, 5000); // 5 segundos de cortesía para el arranque del motor SQL
+  } catch (err) {
+    console.error('Error crítico al conectar a MySQL:', err);
+  }
 })();
 
 // ==================== SEGURIDAD ====================
@@ -67,27 +93,33 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Rate limiting general
+// Rate limiting general (60 solicitudes cada 10 minutos)
 const apiLimiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
+  windowMs: 10 * 60 * 1000,
+  max: 60,
   message: 'Demasiadas solicitudes, intenta más tarde',
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress;
-  }
+  keyGenerator: (req) => req.ip || req.connection.remoteAddress
 });
 
-// Rate limiting específico para login
+// Rate limiting específico para login (5 intentos cada 15 minutos)
 const loginLimiter = rateLimit({
-  windowMs: parseInt(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || '900000'),
-  max: parseInt(process.env.LOGIN_RATE_LIMIT_MAX_ATTEMPTS || '5'),
+  windowMs: 15 * 60 * 1000,
+  max: 5,
   message: 'Demasiados intentos de login, intenta más tarde',
   skipSuccessfulRequests: true,
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress;
-  }
+  keyGenerator: (req) => req.ip || req.connection.remoteAddress
+});
+
+// Rate limiting para creación de pedidos (3 pedidos cada 30 minutos)
+const orderLimiter = rateLimit({
+  windowMs: 30 * 60 * 1000,
+  max: 3,
+  message: 'Máximo de pedidos alcanzado por ahora. Intenta de nuevo en 30 minutos.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.connection.remoteAddress
 });
 
 app.use('/api/', apiLimiter);
@@ -101,8 +133,55 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Sanitizar todos los inputs para prevenir XSS e inyecciones
 app.use(sanitizeInputs);
 
+// Debug Header para verificar despliegue
+app.use((req, res, next) => {
+  res.setHeader('X-Backend-Version', '2.0-debug');
+  next();
+});
+
+// Endpoint de salud para diagnóstico
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    version: '2.0-debug', 
+    dbConnected: !!pool,
+    timestamp: new Date().toISOString() 
+  });
+});
+
+// Helper para parsear campos complejos (JSON o arrays) que vienen de FormData/Multer
+const parseComplexField = (field) => {
+  if (!field) return null;
+  
+  // Si ya es un objeto o array, retornarlo
+  if (typeof field === 'object' && !Array.isArray(field)) return field;
+  if (Array.isArray(field) && field.length > 0 && typeof field[0] === 'object') return field;
+
+  // Si es una cadena, intentar parsear JSON
+  if (typeof field === 'string') {
+    try {
+      return JSON.parse(field);
+    } catch (e) {
+      return field;
+    }
+  }
+  
+  // Caso especial: Multer a veces mete un solo string JSON en un array de un elemento
+  if (Array.isArray(field) && field.length === 1 && typeof field[0] === 'string') {
+    try {
+      return JSON.parse(field[0]);
+    } catch (e) {
+      return field[0];
+    }
+  }
+  
+  return field;
+};
+
 // Servir archivos estáticos (imágenes subidas)
-app.use('/uploads', express.static('public/uploads'));
+// Servir archivos estáticos (imágenes subidas)
+// Asegurar ruta absoluta para evitar problemas en Docker
+app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
 
 app.get('/', (req, res) => {
   res.send('UrbanGoal Backend funcionando');
@@ -163,7 +242,7 @@ app.get('/api/orders', verifyAuth, verifyAdmin, async (req, res) => {
   try {
     const [orders] = await pool.query('SELECT * FROM orders ORDER BY createdAt DESC');
     
-    // Obtener items para cada orden
+    // Obtener items para cada orden y estructurar el objeto cliente
     const ordersWithItems = await Promise.all(
       orders.map(async (order) => {
         const [items] = await pool.query(
@@ -173,11 +252,33 @@ app.get('/api/orders', verifyAuth, verifyAdmin, async (req, res) => {
            WHERE oi.orderId = ?`,
           [order.id]
         );
+        
         return {
-          ...order,
+          id: order.id,
+          total: order.totalPrice,
+          paymentMethod: order.paymentMethod,
+          status: order.paymentStatus,
+          createdAt: order.createdAt,
+          notes: order.notes,
+          customer: {
+            id: order.customerId,
+            fullName: order.customerName,
+            email: order.customerEmail,
+            phone: order.customerPhone,
+            metroLine: order.metroLine,
+            metroStation: order.metroStation,
+            address: order.address
+          },
           items: items.map(item => ({
-            ...item,
-            images: typeof item.images === 'string' ? JSON.parse(item.images) : item.images
+            product: {
+              id: item.productId,
+              name: item.name,
+              brand: item.brand,
+              images: typeof item.images === 'string' ? JSON.parse(item.images) : item.images,
+              price: item.priceAtPurchase
+            },
+            quantity: item.quantity,
+            size: item.size
           }))
         };
       })
@@ -185,7 +286,53 @@ app.get('/api/orders', verifyAuth, verifyAdmin, async (req, res) => {
     
     res.json(ordersWithItems);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error al obtener órdenes:', err);
+    res.status(500).json({ error: 'Error al obtener historial de pedidos' });
+  }
+});
+
+// Actualizar estado de una orden (solo admin)
+app.put('/api/orders/:id/status', verifyAuth, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  
+  const validStatuses = ['pending', 'confirmed', 'paid', 'delivered'];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({ error: 'Estado de pedido inválido' });
+  }
+
+  try {
+    const [result] = await pool.query(
+      'UPDATE orders SET paymentStatus = ? WHERE id = ?',
+      [status, id]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    res.json({ message: 'Estado de orden actualizado', id, status });
+  } catch (err) {
+    console.error('Error al actualizar estado de orden:', err);
+    res.status(500).json({ error: 'Error al actualizar pedido' });
+  }
+});
+
+// Eliminar una orden (solo admin)
+app.delete('/api/orders/:id', verifyAuth, verifyAdmin, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const [result] = await pool.query('DELETE FROM orders WHERE id = ?', [id]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Orden no encontrada' });
+    }
+
+    res.json({ message: 'Orden eliminada correctamente', id });
+  } catch (err) {
+    console.error('Error al eliminar orden:', err);
+    res.status(500).json({ error: 'Error al eliminar pedido' });
   }
 });
 
@@ -224,24 +371,36 @@ app.get('/api/products/:id', async (req, res) => {
 // Endpoint para crear un producto (PROTEGIDO - Solo Admin)
 // Puede subir imágenes o enviar URLs
 app.post('/api/products', verifyAuth, verifyAdmin, uploadMultipleImages, async (req, res) => {
-  const { id, name, brand, price, originalPrice, description, sizes, category, featured, images: bodyImages } = req.body;
+  const { id, name, brand, price, originalPrice, description, sizes, category, type, featured, images: bodyImages } = req.body;
   
   // Validación de inputs
   if (!id || !name || !brand || !price || !sizes || !category) {
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
-  
-  // Validar que price es un número positivo
-  if (isNaN(price) || price <= 0) {
-    return res.status(400).json({ error: 'Precio debe ser un número positivo' });
-  }
-  
-  // Validar que sizes es un array
-  if (!Array.isArray(sizes)) {
-    return res.status(400).json({ error: 'Sizes debe ser un array' });
-  }
-  
+
   try {
+    // Procesar tallas robustamente
+    const parsedSizes = parseComplexField(sizes);
+    
+    console.log('[POST] Tallas recibidas:', typeof sizes, sizes);
+    console.log('[POST] Tallas procesadas:', Array.isArray(parsedSizes) ? 'Array' : typeof parsedSizes, parsedSizes);
+
+    if (!Array.isArray(parsedSizes)) {
+      console.error('[POST] Error: Sizes no es un array después del proceso', parsedSizes);
+      return res.status(400).json({ 
+        error: 'Sizes debe ser un array', 
+        receivedType: typeof parsedSizes,
+        debug: parsedSizes 
+      });
+    }
+
+    // Procesar featured como booleano (para FormData)
+    const isFeatured = featured === 'true' || featured === true || featured === 1 || featured === '1';
+    
+    // Procesar precios como números
+    const numericPrice = parseFloat(price);
+    const numericOriginalPrice = originalPrice ? parseFloat(originalPrice) : null;
+
     let images = [];
 
     // Si hay archivos subidos, procesarlos
@@ -260,30 +419,35 @@ app.post('/api/products', verifyAuth, verifyAdmin, uploadMultipleImages, async (
     }
 
     await pool.query(
-      'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [id, name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(sizes), category, featured || false]
+      'INSERT INTO products (id, name, brand, price, originalPrice, images, description, sizes, category, type, featured) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [id, name, brand, numericPrice, numericOriginalPrice, JSON.stringify(images), description, JSON.stringify(parsedSizes), category, type || 'tenis', isFeatured]
     );
     res.status(201).json({ 
       id, 
       name, 
       brand, 
-      price, 
-      originalPrice: originalPrice || null, 
+      price: numericPrice, 
+      originalPrice: numericOriginalPrice, 
       images, 
       description, 
-      sizes, 
+      sizes: parsedSizes, 
       category, 
-      featured: featured || false 
+      type: type || 'tenis',
+      featured: isFeatured 
     });
   } catch (err) {
     console.error('Error al crear producto:', err);
-    res.status(500).json({ error: 'Error al crear producto' });
+    res.status(500).json({ 
+      error: `Error al crear producto: ${err.message || 'Error desconocido'} ${err.sqlMessage || ''}`,
+      details: err.message,
+      sql: err.sqlMessage
+    });
   }
 });
 
 // Endpoint para actualizar un producto (PROTEGIDO - Solo Admin)
 app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, async (req, res) => {
-  const { id: bodyId, name, brand, price, originalPrice, description, sizes, category, featured, existingImages } = req.body;
+  const { id: bodyId, name, brand, price, originalPrice, description, sizes, category, type, featured, existingImages } = req.body;
   const { id: paramId } = req.params;
   
   // Validación de inputs
@@ -291,23 +455,20 @@ app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, asyn
     return res.status(400).json({ error: 'Faltan campos requeridos' });
   }
   
-  // Validar que price es un número positivo
-  if (isNaN(price) || price <= 0) {
-    return res.status(400).json({ error: 'Precio debe ser un número positivo' });
-  }
-  
   try {
-    let images = [];
-    let parsedSizes = sizes;
+    // Procesar tallas y otros campos robustamente
+    const parsedSizes = parseComplexField(sizes);
+    const isFeatured = featured === 'true' || featured === true || featured === 1 || featured === '1';
+    const numericPrice = parseFloat(price);
+    const numericOriginalPrice = originalPrice ? parseFloat(originalPrice) : null;
 
-    // Parsear sizes si viene como string JSON
-    if (typeof sizes === 'string') {
-      try {
-        parsedSizes = JSON.parse(sizes);
-      } catch (e) {
-        parsedSizes = sizes;
-      }
+    console.log('[PUT] Tallas procesadas:', Array.isArray(parsedSizes) ? 'Array' : typeof parsedSizes);
+
+    if (!Array.isArray(parsedSizes)) {
+      return res.status(400).json({ error: 'Sizes debe ser un array' });
     }
+
+    let images = [];
 
     // Parsear imágenes existentes
     let existingImagesList = [];
@@ -345,24 +506,29 @@ app.put('/api/products/:id', verifyAuth, verifyAdmin, uploadMultipleImages, asyn
     }
 
     await pool.query(
-      'UPDATE products SET name = ?, brand = ?, price = ?, originalPrice = ?, images = ?, description = ?, sizes = ?, category = ?, featured = ? WHERE id = ?',
-      [name, brand, price, originalPrice || null, JSON.stringify(images), description, JSON.stringify(parsedSizes), category, featured || false, paramId]
+      'UPDATE products SET name = ?, brand = ?, price = ?, originalPrice = ?, images = ?, description = ?, sizes = ?, category = ?, type = ?, featured = ? WHERE id = ?',
+      [name, brand, numericPrice, numericOriginalPrice, JSON.stringify(images), description, JSON.stringify(parsedSizes), category, type || 'tenis', isFeatured, paramId]
     );
     res.status(200).json({ 
       id: paramId,
       name, 
       brand, 
-      price, 
-      originalPrice: originalPrice || null, 
+      price: numericPrice, 
+      originalPrice: numericOriginalPrice, 
       images, 
       description, 
       sizes: parsedSizes, 
       category, 
-      featured: featured || false 
+      type: type || 'tenis',
+      featured: isFeatured 
     });
   } catch (err) {
     console.error('Error al actualizar producto:', err);
-    res.status(500).json({ error: 'Error al actualizar producto' });
+    res.status(500).json({ 
+      error: `Error al actualizar producto: ${err.message || 'Error desconocido'} ${err.sqlMessage || ''}`,
+      details: err.message,
+      sql: err.sqlMessage 
+    });
   }
 });
 
@@ -401,8 +567,8 @@ app.delete('/api/products/:id', verifyAuth, verifyAdmin, async (req, res) => {
 //   }
 // });
 
-// Endpoint para recibir órdenes (CON VALIDACIÓN MEJORADA)
-app.post('/api/orders', async (req, res) => {
+// Endpoint para recibir órdenes (CON VALIDACIÓN MEJORADA Y RATE LIMIT)
+app.post('/api/orders', orderLimiter, async (req, res) => {
   const { 
     id, 
     items, 
@@ -491,6 +657,8 @@ app.post('/api/orders', async (req, res) => {
       ]
     );
 
+    let calculatedTotal = 0;
+    
     // 2. Guardar items de la orden en order_items y actualizar stock
     for (const item of items) {
       const productId = item.product.id;
@@ -498,9 +666,9 @@ app.post('/api/orders', async (req, res) => {
       const size = item.size;
       const itemId = `item-${uuidv4()}`;
 
-      // Obtener el producto actual
+      // Obtener el producto actual con precio REAL de la base de datos
       const [productRows] = await connection.query(
-        'SELECT sizes, price FROM products WHERE id = ?',
+        'SELECT name, sizes, price, originalPrice FROM products WHERE id = ?',
         [productId]
       );
 
@@ -509,6 +677,11 @@ app.post('/api/orders', async (req, res) => {
       }
 
       const product = productRows[0];
+      
+      // Seguridad: Usar el precio de la base de datos, no el del frontend
+      const currentPrice = product.price;
+      calculatedTotal += currentPrice * quantity;
+
       const sizes = typeof product.sizes === 'string' 
         ? JSON.parse(product.sizes) 
         : product.sizes;
@@ -516,17 +689,22 @@ app.post('/api/orders', async (req, res) => {
       // Buscar la talla y actualizar stock
       const sizeIndex = sizes.findIndex(s => s.value === size);
       if (sizeIndex === -1) {
-        throw new Error(`Talla ${size} no encontrada para el producto ${productId}`);
+        throw new Error(`Talla ${size} no encontrada para el producto "${product.name}"`);
+      }
+
+      if (sizes[sizeIndex].stock < quantity) {
+        throw new Error(`Stock insuficiente para "${product.name}" (Talla ${size}). Disponibles: ${sizes[sizeIndex].stock}`);
       }
 
       // Restar cantidad del stock
-      sizes[sizeIndex].stock = Math.max(0, sizes[sizeIndex].stock - quantity);
+      sizes[sizeIndex].stock -= quantity;
+      console.log(`[Order] Descontando stock: ${product.name} talla ${size} (-${quantity}). Nuevo stock: ${sizes[sizeIndex].stock}`);
 
       // Guardar item en order_items
       await connection.query(
         `INSERT INTO order_items (id, orderId, productId, quantity, size, priceAtPurchase, createdAt)
          VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-        [itemId, id, productId, quantity, size, product.price]
+        [itemId, id, productId, quantity, size, currentPrice]
       );
 
       // Actualizar stock del producto
@@ -535,6 +713,17 @@ app.post('/api/orders', async (req, res) => {
         [JSON.stringify(sizes), productId]
       );
     }
+
+    // Validar desviación de precio (opcional, aquí solo informamos si hay discrepancia pero usamos el calculado)
+    if (Math.abs(calculatedTotal - total) > 0.01) {
+      console.warn(`[Security] Discrepancia de precio detectada en orden ${id}. Frontend: ${total}, Calculado: ${calculatedTotal}`);
+    }
+
+    // Actualizar el total real en la orden principal
+    await connection.query(
+      'UPDATE orders SET totalPrice = ? WHERE id = ?',
+      [calculatedTotal, id]
+    );
 
     // Confirmar transacción
     await connection.commit();

@@ -245,7 +245,11 @@ export const validateSizes = (sizes) => {
     return { isValid: false, error: 'Debe tener al menos una talla' };
   }
 
-  const validSizes = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '32', '34', '36', '38', '40', '42', '44', '46'];
+  const validSizes = [
+    'XS', 'S', 'M', 'L', 'XL', 'XXL', 
+    '17', '17.5', '18', '18.5', '19', '19.5', '20', '20.5', '21', '21.5', '22', '22.5', '23', '23.5', '24', '24.5', '25', '25.5', '26', '26.5', '27', '27.5', '28', '28.5', '29',
+    '32', '34', '36', '38', '40', '42', '44', '46'
+  ];
 
   for (const size of sizes) {
     if (!size.value || !validSizes.includes(size.value)) {
